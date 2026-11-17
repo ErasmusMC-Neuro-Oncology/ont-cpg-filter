@@ -251,6 +251,7 @@ def filter_bam(
     threads: int = 1,
     index_output: bool = True,
     show_progress: bool = False,
+    use_index: bool = True,
 ) -> Stats:
     stats = Stats()
     start = time.monotonic()
@@ -258,7 +259,7 @@ def filter_bam(
     log.info("output: %s", out_path)
     log.info("motif: %s", motif)
     with pysam.AlignmentFile(in_path, "rb", threads=threads) as inbam, \
-            Reference(fasta_path, motif=motif) as ref, \
+            Reference(fasta_path, motif=motif, use_index=use_index) as ref, \
             pysam.AlignmentFile(out_path, "wb", template=inbam, threads=threads) as outbam:
         log.info("processing reads")
         # Progress bar only when asked for: update() per read costs time.

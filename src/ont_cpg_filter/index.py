@@ -1,10 +1,7 @@
-"""Serialized CpG bitmap index: <fasta>.cg_idx
+"""Serialized CpG bitmap index: <fasta>.<MOTIF>_idx, for example genome.fa.CG_idx
 
 Header checks are deliberately minimal: FASTA size and mtime, plus the motif
 (the bitmaps depend on it). No checksums and no contig name check.
-
-Build once:
-    python -m ont_cpg_filter.index genome.fa --motif CG
 
 Memory: build_index keeps all bitmaps in memory before writing. For a human
 genome that is roughly 2 x 3.1 Gb / 8 bytes, about 780 MB.
@@ -12,11 +9,9 @@ genome that is roughly 2 x 3.1 Gb / 8 bytes, about 780 MB.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
-import time
 
 import numpy as np
 import pysam
@@ -26,8 +21,8 @@ log = logging.getLogger(__name__)
 VERSION = 1
 
 
-def index_path(fasta_path: str) -> str:
-    return fasta_path + ".cg_idx"
+def index_path(fasta_path: str, motif: str) -> str:
+    return f"{fasta_path}.{motif.upper()}_idx"
 
 
 def _fasta_stamp(fasta_path: str) -> dict:
@@ -49,7 +44,10 @@ def build_bitmaps(seq: str, motif: str) -> tuple[int, np.ndarray, np.ndarray]:
 
 
 def build_index(fasta_path: str, motif: str, out_path: str | None = None) -> str:
-    out = out_path or index_path(fasta_path)
+    motif = motif.upper()
+    if len(motif) != 2:
+        raise ValueError("motif must be a dinucleotide, e.g. 'CG'")
+    out = out_path or index_path(fasta_path, motif)
     contigs = []
     arrays: dict[str, np.ndarray] = {}
     with pysam.FastaFile(fasta_path) as f:
@@ -69,7 +67,7 @@ def build_index(fasta_path: str, motif: str, out_path: str | None = None) -> str
 
 
 class CpgIndex:
-    """Lazy access to the bitmaps in a .cg_idx file (one contig loaded at a time)."""
+    """Lazy access to the bitmaps in an index file (one contig loaded at a time)."""
 
     def __init__(self, npz, contigs: list[dict]) -> None:
         self._z = npz
@@ -87,13 +85,13 @@ class CpgIndex:
 
 
 def load_index(fasta_path: str, motif: str) -> CpgIndex | None:
-    """Return the index, or None if there is no index file.
+    """Return the index, or None if there is no index file for this motif.
 
     Raises ValueError if the file exists but is unreadable or does not match
     the FASTA size, mtime and motif. A stale index is a problem to fix, not a
     reason to silently fall back.
     """
-    path = index_path(fasta_path)
+    path = index_path(fasta_path, motif)
     if not os.path.exists(path):
         return None
     try:
@@ -104,32 +102,14 @@ def load_index(fasta_path: str, motif: str) -> CpgIndex | None:
     stamp = _fasta_stamp(fasta_path)
     if (
         header.get("version") != VERSION
-        or header.get("motif") != motif
+        or header.get("motif") != motif.upper()
         or header.get("fasta_size") != stamp["fasta_size"]
         or header.get("fasta_mtime_ns") != stamp["fasta_mtime_ns"]
     ):
         z.close()
         raise ValueError(
-            f"{path} is stale or was built for another motif (header motif "
-            f"{header.get('motif')!r}, requested {motif!r}). Rebuild it with: "
-            f"python -m ont_cpg_filter.index {fasta_path} --motif {motif}"
+            f"{path} is stale or was built for another motif. "
+            f"Rebuild it with: ont-cpg-filter index {fasta_path} --motif {motif.upper()}"
         )
     log.info("using CpG index %s", path)
     return CpgIndex(z, header["contigs"])
-
-
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Build the <fasta>.cg_idx CpG index.")
-    p.add_argument("fasta")
-    p.add_argument("--motif", default="CG")
-    p.add_argument("-o", "--output", help="default: <fasta>.cg_idx")
-    a = p.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    t0 = time.perf_counter()
-    out = build_index(a.fasta, a.motif.upper(), a.output)
-    log.info("built %s in %.1f s, %.1f MB", out, time.perf_counter() - t0, os.path.getsize(out) / 1e6)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

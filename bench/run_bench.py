@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Time the v3 filter with and without the CpG index, on the same BAM.
+"""Time the filter with and without the CpG index, on the same BAM.
 
-Versions:
-    v0-passthrough  reads the BAM and fetches the tags, no filtering (baseline)
-    v3-index        bitmaps loaded from <fasta>.cg_idx
-    v3-noindex      bitmaps built per chromosome during the run
+Variants:
+    baseline    reads the BAM and fetches the tags, no filtering
+    indexed     CpG bitmaps loaded from <fasta>.<MOTIF>_idx
+    on-the-fly  CpG bitmaps built per chromosome during the run
 
 Usage (from the project root):
     python bench/run_bench.py test_region.bam -r genome.fa
-    python bench/run_bench.py test_region.bam -r genome.fa --versions v3-index v3-noindex
+    python bench/run_bench.py test_region.bam -r genome.fa --variants indexed on-the-fly
 
 The index is built before the timed runs if it is missing. If it exists but does
 not match the FASTA or motif, the run stops with an error.
@@ -26,19 +26,19 @@ import time
 
 import pysam
 
-import v3_bitmap
-from ont_cpg_filter.filter import Stats
-from ont_cpg_filter.index import build_index, load_index
+from ont_cpg_filter.filter import Stats, filter_read
+from ont_cpg_filter.index import build_index, index_path, load_index
+from ont_cpg_filter.reference import Reference
 
 
 def _no_filter(read, ref, stats):
     pass
 
 
-VERSIONS = {
-    "v0-passthrough": (lambda fasta, motif: contextlib.nullcontext(None), _no_filter),
-    "v3-index": (functools.partial(v3_bitmap.FastaRef, use_index=True), v3_bitmap.filter_read),
-    "v3-noindex": (functools.partial(v3_bitmap.FastaRef, use_index=False), v3_bitmap.filter_read),
+VARIANTS = {
+    "baseline": (lambda fasta, motif: contextlib.nullcontext(None), _no_filter),
+    "indexed": (functools.partial(Reference, use_index=True), filter_read),
+    "on-the-fly": (functools.partial(Reference, use_index=False), filter_read),
 }
 
 
@@ -66,9 +66,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("bam")
     p.add_argument("-r", "--reference", required=True)
-    p.add_argument("--motif", default="CG")
+    p.add_argument("-m", "--motif", default="CG")
     p.add_argument("--limit", type=int, default=0, help="only the first N reads (0 = all)")
-    p.add_argument("--versions", nargs="+", default=list(VERSIONS), choices=list(VERSIONS))
+    p.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=list(VARIANTS))
     a = p.parse_args()
     motif = a.motif.upper()
 
@@ -76,37 +76,37 @@ def main() -> None:
     if not os.path.exists(a.reference + ".fai"):
         print("prep: creating FASTA index .fai")
         pysam.faidx(a.reference)
-    if "v3-index" in a.versions:
+    if "indexed" in a.variants:
         existing = load_index(a.reference, motif)  # raises if stale or unreadable
         if existing is None:
             t0 = time.perf_counter()
             build_index(a.reference, motif)
-            print(f"prep: built {a.reference}.cg_idx in {time.perf_counter() - t0:.1f} s (not timed)")
+            print(f"prep: built {index_path(a.reference, motif)} in {time.perf_counter() - t0:.1f} s (not timed)")
         else:
             existing.close()
-            print(f"prep: existing {a.reference}.cg_idx matches FASTA and motif")
+            print(f"prep: existing {index_path(a.reference, motif)} matches FASTA and motif")
 
     results = {}
-    for name in a.versions:
-        make_ref, filt = VERSIONS[name]
+    for name in a.variants:
+        make_ref, filt = VARIANTS[name]
         dt, st, out, used_index = run(make_ref, filt, a.bam, a.reference, motif, a.limit)
         results[name] = (dt, st, out)
         rate = st.reads / dt if dt else float("inf")
         note = ""
-        if name == "v3-index":
+        if name == "indexed":
             note = " index=yes" if used_index else " index=NO"
         print(
-            f"{name:15s} reads={st.reads} with_mm={st.reads_with_mm} "
+            f"{name:11s} reads={st.reads} with_mm={st.reads_with_mm} "
             f"time={dt:.2f}s rate={rate:.0f} reads/s kept={st.kept} removed={st.removed} "
             f"added={st.added}{note}"
         )
 
-    # Correctness: the two v3 variants must give identical output.
-    if "v3-index" in results and "v3-noindex" in results:
-        a_out = results["v3-index"][2]
-        b_out = results["v3-noindex"][2]
+    # Correctness: the indexed and on-the-fly variants must give identical output.
+    if "indexed" in results and "on-the-fly" in results:
+        a_out = results["indexed"][2]
+        b_out = results["on-the-fly"][2]
         diff = [i for i, (x, y) in enumerate(zip(a_out, b_out)) if x != y]
-        msg = f"v3-noindex vs v3-index: {len(diff)} reads differ"
+        msg = f"on-the-fly vs indexed: {len(diff)} reads differ"
         if diff:
             msg += f", first: {a_out[diff[0]][0]}"
         print(msg)

@@ -5,7 +5,7 @@ bitmaps, packed to 1 bit per base, are used:
   - fwd: position is the first base of the motif (the C of CpG)
   - rev: position is the second base of the motif (the G of CpG)
 
-The bitmaps come from <fasta>.cg_idx if that file matches the FASTA and motif
+The bitmaps come from <fasta>.<MOTIF>_idx if that file matches the FASTA and motif
 (see index.py), otherwise they are built per chromosome when first needed.
 """
 
@@ -17,7 +17,7 @@ import os
 import numpy as np
 import pysam
 
-from ont_cpg_filter.index import build_bitmaps, load_index
+from ont_cpg_filter.index import build_bitmaps, index_path, load_index
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,11 @@ class Reference:
         self._fasta = pysam.FastaFile(fasta_path)
         self.motif = motif.upper()
         self._index = load_index(fasta_path, self.motif) if use_index else None
+        if use_index and self._index is None:
+            log.info(
+                "no CpG index %s, computing bitmaps per chromosome",
+                index_path(fasta_path, self.motif),
+            )
         self._chrom: str | None = None
         self._len = 0
         self._fwd = np.zeros(0, dtype=np.uint8)
@@ -40,7 +45,7 @@ class Reference:
 
     @property
     def uses_index(self) -> bool:
-        """True if a matching <fasta>.cg_idx was loaded."""
+        """True if a matching <fasta>.<MOTIF>_idx was loaded."""
         return self._index is not None
 
     def close(self) -> None:
