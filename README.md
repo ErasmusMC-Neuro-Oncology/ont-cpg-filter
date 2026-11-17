@@ -1,5 +1,7 @@
 # ont-cpg-filter
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Rewrites the base modification calls in an aligned Oxford Nanopore BAM so that
 only calls on CpG sites of the reference remain.
 
@@ -106,6 +108,10 @@ covers reading, filtering and tag handling, not writing the output BAM.
 ```bash
 pytest
 ```
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ## Limitations
 

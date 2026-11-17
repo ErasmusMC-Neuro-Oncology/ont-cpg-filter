@@ -7,6 +7,8 @@ name = "ont-cpg-filter"
 version = "0.1.0"
 description = "Remove 5mC/5hmC calls from BAM MM/ML tags at positions without a CpG context"
 readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Dr. Youri Hoogstrate"}]
 requires-python = ">=3.10"
 dependencies = [
     "pysam>=0.22",
