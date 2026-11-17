@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Run the filter implementations on the same BAM, time them and compare outputs.
+"""Time the v3 filter with and without the CpG index, on the same BAM.
 
 Versions:
-    v1-percall   one pysam fetch per CpG check
-    v2-window    one reference fetch per read, regex scan for sites
-    v3-index     numpy bitmaps loaded from <fasta>.cg_idx
-    v3-noindex   numpy bitmaps built per chromosoom during the run
+    v0-passthrough  reads the BAM and fetches the tags, no filtering (baseline)
+    v3-index        bitmaps loaded from <fasta>.cg_idx
+    v3-noindex      bitmaps built per chromosome during the run
 
 Usage (from the project root):
     python bench/run_bench.py test_region.bam -r genome.fa
     python bench/run_bench.py test_region.bam -r genome.fa --versions v3-index v3-noindex
 
-Build the index first for v3-index: python -m ont_cpg_filter.index genome.fa
+The index is built before the timed runs if it is missing. If it exists but does
+not match the FASTA or motif, the run stops with an error.
 Timing covers reading, filtering and tag inspection, not writing a BAM.
 Run it twice if the first run is slow: the second run has the OS file cache warm.
 """
@@ -26,21 +26,17 @@ import time
 
 import pysam
 
-import v1_percall
-import v2_window
 import v3_bitmap
 from ont_cpg_filter.filter import Stats
 from ont_cpg_filter.index import build_index, load_index
+
 
 def _no_filter(read, ref, stats):
     pass
 
 
 VERSIONS = {
-    # Baseline: only iterate the BAM and fetch the MM/ML tags, no filtering.
     "v0-passthrough": (lambda fasta, motif: contextlib.nullcontext(None), _no_filter),
-    "v1-percall": (v1_percall.FastaKeeps, v1_percall.filter_read),
-    "v2-window": (v2_window.FastaWindow, v2_window.filter_read),
     "v3-index": (functools.partial(v3_bitmap.FastaRef, use_index=True), v3_bitmap.filter_read),
     "v3-noindex": (functools.partial(v3_bitmap.FastaRef, use_index=False), v3_bitmap.filter_read),
 }
@@ -81,7 +77,7 @@ def main() -> None:
         print("prep: creating FASTA index .fai")
         pysam.faidx(a.reference)
     if "v3-index" in a.versions:
-        existing = load_index(a.reference, motif)
+        existing = load_index(a.reference, motif)  # raises if stale or unreadable
         if existing is None:
             t0 = time.perf_counter()
             build_index(a.reference, motif)
@@ -93,31 +89,26 @@ def main() -> None:
     results = {}
     for name in a.versions:
         make_ref, filt = VERSIONS[name]
-        dt, st, out, used_index = run(make_ref, filt, a.bam, a.reference, a.motif.upper(), a.limit)
+        dt, st, out, used_index = run(make_ref, filt, a.bam, a.reference, motif, a.limit)
         results[name] = (dt, st, out)
         rate = st.reads / dt if dt else float("inf")
         note = ""
         if name == "v3-index":
-            note = " index=yes" if used_index else " index=NO (no matching .cg_idx, bitmaps were built)"
+            note = " index=yes" if used_index else " index=NO"
         print(
-            f"{name:12s} reads={st.reads} with_mm={st.reads_with_mm} "
-            f"time={dt:.2f}s rate={rate:.0f} reads/s kept={st.kept} removed={st.removed}{note}"
+            f"{name:15s} reads={st.reads} with_mm={st.reads_with_mm} "
+            f"time={dt:.2f}s rate={rate:.0f} reads/s kept={st.kept} removed={st.removed} "
+            f"added={st.added}{note}"
         )
 
-    # v1 is the most direct implementation of the rule, so it is the reference for correctness.
-    # v0-passthrough does not filter, so it is excluded from the comparison.
-    compared = [n for n in a.versions if n != "v0-passthrough"]
-    if not compared:
-        return
-    base = "v1-percall" if "v1-percall" in compared else compared[0]
-    base_out = results[base][2]
-    for name in compared:
-        if name == base:
-            continue
-        diff = [i for i, (x, y) in enumerate(zip(base_out, results[name][2])) if x != y]
-        msg = f"{name} vs {base}: {len(diff)} reads differ"
+    # Correctness: the two v3 variants must give identical output.
+    if "v3-index" in results and "v3-noindex" in results:
+        a_out = results["v3-index"][2]
+        b_out = results["v3-noindex"][2]
+        diff = [i for i, (x, y) in enumerate(zip(a_out, b_out)) if x != y]
+        msg = f"v3-noindex vs v3-index: {len(diff)} reads differ"
         if diff:
-            msg += f", first: {base_out[diff[0]][0]}"
+            msg += f", first: {a_out[diff[0]][0]}"
         print(msg)
 
 

@@ -99,6 +99,8 @@ def test_filter_read_keeps_only_cpg_calls(fasta):
     with Reference(fasta, motif="CG", use_index=False) as ref:
         filter_read(read, ref, stats)
 
+    # The CpG call (index 1) is kept with its ML value; the non-CpG call is removed;
+    # no CpG position is missing, so nothing is added. Flag becomes '?'.
     assert read.get_tag("MM") == "C+m?,0;"
     assert list(read.get_tag("ML")) == [200]
-    assert stats.kept == 1 and stats.removed == 1
+    assert stats.kept == 1 and stats.removed == 1 and stats.added == 0

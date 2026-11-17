@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="More logging (-v: debug)",
     )
     parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="show a progress bar (costs speed; off by default)",
+    )
+    parser.add_argument(
         "--no-output-index",
         action="store_true",
         help="do not write a .bai index for the output BAM",
@@ -69,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             motif=args.motif.upper(),
             threads=args.threads,
             index_output=not args.no_output_index,
+            show_progress=args.progress,
         )
     except (NotImplementedError, ValueError, OSError) as exc:
         logging.getLogger("ont_cpg_filter").error("%s", exc)
