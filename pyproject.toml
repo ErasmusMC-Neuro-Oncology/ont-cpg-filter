@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ont-cpg-filter"
+version = "0.1.0"
+description = "Remove 5mC/5hmC calls from BAM MM/ML tags at positions without a CpG context"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pysam>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+ont-cpg-filter = "ont_cpg_filter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
