@@ -10,3 +10,4 @@ dist/
 *.fa
 *.egg-info
 *.pyc
+*.cg_idx

@@ -1,30 +1,51 @@
 from array import array
 
+import numpy as np
 import pysam
 import pytest
 
 from ont_cpg_filter.filter import Stats, filter_read, parse_mm
+from ont_cpg_filter.index import build_index
 from ont_cpg_filter.reference import Reference
 
 
 @pytest.fixture
 def fasta(tmp_path):
-    """chr1 = ACGTCAGA: CpG at 1-2 and 4-... only C1 and G2 form a CpG; C4 does not."""
+    """chr1 = ACGTCAGA: one CpG at 1-2; C4 is followed by A, so not a CpG."""
     path = tmp_path / "ref.fa"
     path.write_text(">chr1\nACGTCAGA\n")
     pysam.faidx(str(path))
     return str(path)
 
 
-def test_forward_and_reverse_cpg(fasta):
+def test_scalar_cpg_check(fasta):
     with Reference(fasta, motif="CG") as ref:
         # 0-based: A0 C1 G2 T3 C4 A5 G6 A7
-        assert ref.keeps("chr1", 1, "C")  # C of CpG on + strand
-        assert ref.keeps("chr1", 2, "G")  # G of CpG (reverse-strand call)
-        assert not ref.keeps("chr1", 4, "C")  # C4 is followed by A
+        assert ref.keeps("chr1", 1, "C")
+        assert ref.keeps("chr1", 2, "G")
+        assert not ref.keeps("chr1", 4, "C")
         assert not ref.keeps("chr1", 0, "C")
-        assert not ref.keeps("chr1", 1, "G")  # C1 is not preceded by C
+        assert not ref.keeps("chr1", 1, "G")
         assert not ref.keeps("chr1", 7, "A")
+
+
+def test_bitmap_site_mask(fasta):
+    with Reference(fasta, motif="CG", use_index=False) as ref:
+        rpos = np.array([1, 2, 4, -1, 99], dtype=np.int64)
+        fwd = ref.site_mask("chr1", rpos, forward=True)
+        rev = ref.site_mask("chr1", rpos, forward=False)
+        assert fwd.tolist() == [True, False, False, False, False]
+        assert rev.tolist() == [False, True, False, False, False]
+
+
+def test_index_roundtrip_matches_built_bitmaps(fasta):
+    build_index(fasta, "CG")
+    rpos = np.array([1, 2, 4, -1, 99], dtype=np.int64)
+    with Reference(fasta, motif="CG", use_index=True) as ref:
+        fwd = ref.site_mask("chr1", rpos, forward=True)
+        rev = ref.site_mask("chr1", rpos, forward=False)
+    assert fwd.tolist() == [True, False, False, False, False]
+    assert rev.tolist() == [False, True, False, False, False]
 
 
 def test_invalid_motif_raises(fasta):
@@ -34,10 +55,10 @@ def test_invalid_motif_raises(fasta):
 
 def test_parse_mm_roundtrip():
     entries = parse_mm("C+mh?,0,3;G-m,2;")
-    assert [e.seq_base for e in entries] == ["C", "C"]
     assert entries[0].codes == "mh" and entries[0].flag == "?"
     assert entries[0].skips == [0, 3]
-    assert entries[1].seq_base == "C" and entries[1].skips == [2]
+    assert entries[1].base == "G" and entries[1].strand == "-"
+    assert entries[1].skips == [2]
     assert entries[0].to_mm() == "C+mh?,0,3;"
 
 
@@ -55,7 +76,7 @@ def test_filter_read_keeps_only_cpg_calls(fasta):
     read.set_tag("ML", array("B", [200, 150]))
 
     stats = Stats()
-    with Reference(fasta, motif="CG") as ref:
+    with Reference(fasta, motif="CG", use_index=False) as ref:
         filter_read(read, ref, stats)
 
     assert read.get_tag("MM") == "C+m?,0;"

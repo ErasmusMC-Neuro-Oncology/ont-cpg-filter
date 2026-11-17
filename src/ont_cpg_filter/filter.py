@@ -9,16 +9,19 @@ ML holds one probability per call and code, in the same order.
 Orientation: MM refers to the original read. For reverse-aligned reads the
 stored SEQ is its reverse complement, so the strand flips and the candidate
 order runs from the end of SEQ.
+
+The CpG decision is made only from the reference (see Reference.site_mask).
+SEQ is used only to count candidate bases for the skip counts.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import time
 from array import array
 from dataclasses import dataclass, field
 
+import numpy as np
 import pysam
 
 from ont_cpg_filter.reference import Reference
@@ -76,19 +79,8 @@ class Stats:
     removed: int = 0
 
 
-def _motif_sites(refseq: str, motif: str, start: int) -> tuple[set[int], set[int]]:
-    """Absolute reference positions where the motif starts (fwd) and ends (rev).
-
-    Uses a lookahead so overlapping motif matches are found too.
-    """
-    starts = [m.start() for m in re.finditer(f"(?={motif})", refseq)]
-    fwd = {start + p for p in starts}  # first letter of motif at p
-    rev = {start + p + 1 for p in starts}  # second letter of motif at p+1
-    return fwd, rev
-
-
 def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> None:
-    """Remove modification calls whose position is not in a CpG on the reference.
+    """Remove modification calls whose reference position is not a CpG site.
 
     Calls that are removed make their entry's flag '?' (unknown), not '.'
     (unmodified), so the removed calls are not reported as unmodified.
@@ -101,75 +93,73 @@ def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> Non
     entries = parse_mm(read.get_tag("MM"))
     ml_in = list(read.get_tag("ML")) if read.has_tag("ML") else None
 
-    # One reference fetch and one motif scan per read.
-    motif = ref.motif
     chrom = read.reference_name
-    rstart, rend = read.reference_start, read.reference_end
-    refseq = ref.window(chrom, rstart, rend)
-    fwd_sites, rev_sites = _motif_sites(refseq, motif, rstart)
-    # Reference position for each query (SEQ) index; None for soft clips.
-    qpos_to_rpos = read.get_reference_positions(full_length=True)
+    seq_arr = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
+    # Reference position per SEQ index; -1 for soft clips.
+    rpos = np.fromiter(
+        (-1 if r is None else r for r in read.get_reference_positions(full_length=True)),
+        dtype=np.int64,
+        count=len(seq),
+    )
 
     new_entries: list[ModEntry] = []
     ml_out: list[int] = []
     ml_pos = 0
 
     for entry in entries:
+        # MM refers to the original read. For reverse-aligned reads SEQ is its
+        # reverse complement, so the strand flips relative to the stored SEQ.
         strand = entry.strand
         if read.is_reverse:
             strand = "-" if strand == "+" else "+"
         seq_base = entry.base if strand == "+" else entry.base.translate(_COMPLEMENT)
 
-        # Candidate SEQ indices in the order the skip counts run.
-        cand = [m.start() for m in re.finditer(seq_base, seq)]
+        # SEQ indices of candidate bases, in the order the skip counts run.
+        cand = np.flatnonzero(seq_arr == ord(seq_base))
         if strand == "-":
-            cand.reverse()
+            cand = cand[::-1]
         n_codes = len(entry.codes)
 
-        # Decode skip counts into indices into `cand`.
-        calls: list[int] = []
-        k = 0
-        for s in entry.skips:
-            k += s
-            calls.append(k)
-            k += 1
-        if calls and calls[-1] >= len(cand):
+        # Skip counts -> indices into cand: call k = cumsum(skip + 1) - 1.
+        skips = np.asarray(entry.skips, dtype=np.int64)
+        calls = np.cumsum(skips + 1) - 1
+        n_calls = calls.size
+        if n_calls and calls[-1] >= cand.size:
             raise ValueError(
                 f"{read.query_name}: MM entry {entry.base}{entry.strand}{entry.codes} needs "
-                f"{calls[-1] + 1} {seq_base} bases but SEQ has {len(cand)} "
+                f"{calls[-1] + 1} {seq_base} bases but SEQ has {cand.size} "
                 f"(seq length {len(seq)}, MM={read.get_tag('MM')!r})"
             )
 
-        n_vals = len(calls) * n_codes
+        n_vals = n_calls * n_codes
         vals = ml_in[ml_pos : ml_pos + n_vals] if ml_in is not None else None
         ml_pos += n_vals
 
-        sites = fwd_sites if seq_base == motif[0] else rev_sites
-        kept_calls = []
-        for j, cand_idx in enumerate(calls):
-            rpos = qpos_to_rpos[cand[cand_idx]]
-            if rpos is not None and rpos in sites:
-                kept_calls.append(j)
+        if n_calls:
+            keep = ref.site_mask(
+                chrom,
+                rpos[cand[calls]],
+                forward=(seq_base == ref.motif[0]),
+            )
+            kept = np.flatnonzero(keep)
+        else:
+            kept = np.zeros(0, dtype=np.int64)
 
-        removed = len(calls) - len(kept_calls)
-        stats.kept += len(kept_calls) * n_codes
+        removed = n_calls - kept.size
+        stats.kept += kept.size * n_codes
         stats.removed += removed * n_codes
 
-        if not kept_calls:
+        if kept.size == 0:
             continue
 
-        new_skips = []
-        prev = -1
-        for j in kept_calls:
-            new_skips.append(calls[j] - prev - 1)
-            prev = calls[j]
-        entry.skips = new_skips
+        kept_k = calls[kept]
+        entry.skips = (np.diff(np.concatenate(([-1], kept_k))) - 1).tolist()
         if removed:
             entry.flag = "?"
         new_entries.append(entry)
 
         if vals is not None:
-            for j in kept_calls:
+            for j in kept.tolist():
                 ml_out.extend(vals[j * n_codes : (j + 1) * n_codes])
 
     if new_entries:
