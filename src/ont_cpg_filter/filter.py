@@ -116,6 +116,46 @@ def query_to_ref(read: pysam.AlignedSegment, seq_len: int) -> np.ndarray:
     return out
 
 
+def ref_blocks(read: pysam.AlignedSegment) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(query start, reference start, length) per M/=/X CIGAR block, sorted by query start."""
+    q_starts, r_starts, lengths = [], [], []
+    qpos = 0
+    rpos = read.reference_start
+    for op, n in read.cigartuples or ():
+        if op in (0, 7, 8):  # M, =, X
+            q_starts.append(qpos)
+            r_starts.append(rpos)
+            lengths.append(n)
+            qpos += n
+            rpos += n
+        elif op in (1, 4):  # I, S
+            qpos += n
+        elif op in (2, 3):  # D, N
+            rpos += n
+    return (
+        np.asarray(q_starts, dtype=np.int64),
+        np.asarray(r_starts, dtype=np.int64),
+        np.asarray(lengths, dtype=np.int64),
+    )
+
+
+def query_to_ref_at(blocks: tuple[np.ndarray, np.ndarray, np.ndarray], qidx: np.ndarray) -> np.ndarray:
+    """Reference position for the given SEQ indices (-1 for soft clips and insertions).
+
+    Binary search over the CIGAR blocks: the cost depends on how many indices
+    are queried, not on the read length.
+    """
+    q0, r0, ln = blocks
+    out = np.full(qidx.shape, -1, dtype=np.int64)
+    if q0.size == 0 or qidx.size == 0:
+        return out
+    b = np.searchsorted(q0, qidx, side="right") - 1
+    bb = np.maximum(b, 0)
+    inside = (b >= 0) & (qidx < q0[bb] + ln[bb])
+    out[inside] = (r0[bb] + (qidx - q0[bb]))[inside]
+    return out
+
+
 def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> None:
     """Remove modification calls whose reference position is not a CpG site.
 
@@ -133,7 +173,7 @@ def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> Non
     chrom = read.reference_name
     seq_arr = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
     # Reference position per SEQ index; -1 for soft clips.
-    rpos = query_to_ref(read, len(seq))
+    blocks = ref_blocks(read)
 
     new_entries: list[ModEntry] = []
     ml_out: list[int] = []
@@ -171,7 +211,7 @@ def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> Non
         if n_calls:
             keep = ref.site_mask(
                 chrom,
-                rpos[cand[calls]],
+                query_to_ref_at(blocks, cand[calls]),
                 forward=(seq_base == ref.motif[0]),
             )
             kept = np.flatnonzero(keep)
