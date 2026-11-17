@@ -41,8 +41,9 @@ class ModEntry:
     skips: list[int] = field(default_factory=list)
 
     def to_mm(self) -> str:
-        skips = "".join(f",{s}" for s in self.skips)
-        return f"{self.base}{self.strand}{self.codes}{self.flag}{skips};"
+        skips = ",".join(map(str, self.skips))
+        sep = "," if len(self.skips) else ""
+        return f"{self.base}{self.strand}{self.codes}{self.flag}{sep}{skips};"
 
 
 def parse_mm(mm: str) -> list[ModEntry]:
@@ -62,7 +63,8 @@ def parse_mm(mm: str) -> list[ModEntry]:
             raise NotImplementedError(
                 f"numeric ChEBI modification codes are not supported: {part!r}"
             )
-        skips = [int(x) for x in fields[1:] if x != ""]
+        # Parse all skip counts at once in C instead of one int() per element.
+        skips = np.fromstring(",".join(fields[1:]), dtype=np.int64, sep=",")
         entries.append(ModEntry(header[0], header[1], rest, flag, skips))
     return entries
 
@@ -86,11 +88,15 @@ def query_to_ref(read: pysam.AlignedSegment, seq_len: int) -> np.ndarray:
     looping over every base in Python.
     """
     out = np.full(seq_len, -1, dtype=np.int64)
+    # Collect one (query start, reference start, length) block per M/=/X operation.
+    q_starts, r_starts, lengths = [], [], []
     qpos = 0
     rpos = read.reference_start
     for op, n in read.cigartuples or ():
         if op in (0, 7, 8):  # M, =, X: consumes query and reference
-            out[qpos : qpos + n] = np.arange(rpos, rpos + n, dtype=np.int64)
+            q_starts.append(qpos)
+            r_starts.append(rpos)
+            lengths.append(n)
             qpos += n
             rpos += n
         elif op in (1, 4):  # I, S: consumes query only
@@ -98,6 +104,15 @@ def query_to_ref(read: pysam.AlignedSegment, seq_len: int) -> np.ndarray:
         elif op in (2, 3):  # D, N: consumes reference only
             rpos += n
         # H (5) and P (6) consume neither
+    if not lengths:
+        return out
+    # Expand all blocks with a few numpy calls instead of one arange per block.
+    ln = np.asarray(lengths, dtype=np.int64)
+    block_start = np.cumsum(ln) - ln
+    offset = np.arange(int(ln.sum()), dtype=np.int64) - np.repeat(block_start, ln)
+    qidx = np.repeat(np.asarray(q_starts, dtype=np.int64), ln) + offset
+    ridx = np.repeat(np.asarray(r_starts, dtype=np.int64), ln) + offset
+    out[qidx] = ridx
     return out
 
 

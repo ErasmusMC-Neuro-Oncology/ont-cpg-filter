@@ -19,6 +19,7 @@ Run it twice if the first run is slow: the second run has the OS file cache warm
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import os
 import time
@@ -31,7 +32,13 @@ import v3_bitmap
 from ont_cpg_filter.filter import Stats
 from ont_cpg_filter.index import build_index, load_index
 
+def _no_filter(read, ref, stats):
+    pass
+
+
 VERSIONS = {
+    # Baseline: only iterate the BAM and fetch the MM/ML tags, no filtering.
+    "v0-passthrough": (lambda fasta, motif: contextlib.nullcontext(None), _no_filter),
     "v1-percall": (v1_percall.FastaKeeps, v1_percall.filter_read),
     "v2-window": (v2_window.FastaWindow, v2_window.filter_read),
     "v3-index": (functools.partial(v3_bitmap.FastaRef, use_index=True), v3_bitmap.filter_read),
@@ -98,9 +105,13 @@ def main() -> None:
         )
 
     # v1 is the most direct implementation of the rule, so it is the reference for correctness.
-    base = "v1-percall" if "v1-percall" in results else a.versions[0]
+    # v0-passthrough does not filter, so it is excluded from the comparison.
+    compared = [n for n in a.versions if n != "v0-passthrough"]
+    if not compared:
+        return
+    base = "v1-percall" if "v1-percall" in compared else compared[0]
     base_out = results[base][2]
-    for name in a.versions:
+    for name in compared:
         if name == base:
             continue
         diff = [i for i, (x, y) in enumerate(zip(base_out, results[name][2])) if x != y]

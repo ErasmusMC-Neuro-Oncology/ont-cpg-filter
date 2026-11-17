@@ -66,9 +66,9 @@ def test_invalid_motif_raises(fasta):
 def test_parse_mm_roundtrip():
     entries = parse_mm("C+mh?,0,3;G-m,2;")
     assert entries[0].codes == "mh" and entries[0].flag == "?"
-    assert entries[0].skips == [0, 3]
+    assert entries[0].skips.tolist() == [0, 3]
     assert entries[1].base == "G" and entries[1].strand == "-"
-    assert entries[1].skips == [2]
+    assert entries[1].skips.tolist() == [2]
     assert entries[0].to_mm() == "C+mh?,0,3;"
 
 
