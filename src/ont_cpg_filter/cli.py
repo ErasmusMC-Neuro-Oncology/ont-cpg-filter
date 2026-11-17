@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="More logging (-v: debug)",
     )
+    parser.add_argument(
+        "--no-output-index",
+        action="store_true",
+        help="do not write a .bai index for the output BAM",
+    )
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -63,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             args.reference,
             motif=args.motif.upper(),
             threads=args.threads,
+            index_output=not args.no_output_index,
         )
     except (NotImplementedError, ValueError, OSError) as exc:
         logging.getLogger("ont_cpg_filter").error("%s", exc)

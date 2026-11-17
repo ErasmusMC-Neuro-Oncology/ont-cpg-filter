@@ -251,6 +251,7 @@ def filter_bam(
     fasta_path: str,
     motif: str = "CG",
     threads: int = 1,
+    index_output: bool = True,
 ) -> Stats:
     stats = Stats()
     start = time.monotonic()
@@ -272,6 +273,10 @@ def filter_bam(
                     "%d reads processed (%d with MM), %.0f s elapsed",
                     stats.reads, stats.reads_with_mm, time.monotonic() - start,
                 )
+    if index_output:
+        # Output is closed at this point, so the index matches the finished file.
+        log.info("indexing %s", out_path)
+        pysam.index(out_path)
     log.info(
         "done: %d reads (%d with MM) in %.1f s",
         stats.reads, stats.reads_with_mm, time.monotonic() - start,
