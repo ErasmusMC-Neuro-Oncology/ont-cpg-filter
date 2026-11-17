@@ -11,3 +11,4 @@ dist/
 *.egg-info
 *.pyc
 *.cg_idx
+prof*.txt

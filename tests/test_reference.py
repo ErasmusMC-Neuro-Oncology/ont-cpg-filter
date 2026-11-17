@@ -4,7 +4,7 @@ import numpy as np
 import pysam
 import pytest
 
-from ont_cpg_filter.filter import Stats, filter_read, parse_mm
+from ont_cpg_filter.filter import Stats, filter_read, parse_mm, query_to_ref
 from ont_cpg_filter.index import build_index
 from ont_cpg_filter.reference import Reference
 
@@ -46,6 +46,16 @@ def test_index_roundtrip_matches_built_bitmaps(fasta):
         rev = ref.site_mask("chr1", rpos, forward=False)
     assert fwd.tolist() == [True, False, False, False, False]
     assert rev.tolist() == [False, True, False, False, False]
+
+
+def test_query_to_ref_handles_clips_indels():
+    header = pysam.AlignmentHeader.from_dict({"SQ": [{"SN": "chr1", "LN": 100}]})
+    read = pysam.AlignedSegment(header)
+    read.query_sequence = "A" * 10
+    read.cigarstring = "2S3M1I2M1D2M"
+    read.reference_start = 10
+    # S: -1 -1 | M3: 10 11 12 | I: -1 | M2: 13 14 | D skips 15 | M2: 16 17
+    assert query_to_ref(read, 10).tolist() == [-1, -1, 10, 11, 12, -1, 13, 14, 16, 17]
 
 
 def test_invalid_motif_raises(fasta):

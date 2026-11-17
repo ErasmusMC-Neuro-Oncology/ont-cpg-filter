@@ -79,6 +79,28 @@ class Stats:
     removed: int = 0
 
 
+def query_to_ref(read: pysam.AlignedSegment, seq_len: int) -> np.ndarray:
+    """Reference position per SEQ index (-1 for soft clips and insertions).
+
+    Built from the CIGAR: one numpy slice per M/=/X operation. Much faster than
+    looping over every base in Python.
+    """
+    out = np.full(seq_len, -1, dtype=np.int64)
+    qpos = 0
+    rpos = read.reference_start
+    for op, n in read.cigartuples or ():
+        if op in (0, 7, 8):  # M, =, X: consumes query and reference
+            out[qpos : qpos + n] = np.arange(rpos, rpos + n, dtype=np.int64)
+            qpos += n
+            rpos += n
+        elif op in (1, 4):  # I, S: consumes query only
+            qpos += n
+        elif op in (2, 3):  # D, N: consumes reference only
+            rpos += n
+        # H (5) and P (6) consume neither
+    return out
+
+
 def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> None:
     """Remove modification calls whose reference position is not a CpG site.
 
@@ -96,11 +118,7 @@ def filter_read(read: pysam.AlignedSegment, ref: Reference, stats: Stats) -> Non
     chrom = read.reference_name
     seq_arr = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
     # Reference position per SEQ index; -1 for soft clips.
-    rpos = np.fromiter(
-        (-1 if r is None else r for r in read.get_reference_positions(full_length=True)),
-        dtype=np.int64,
-        count=len(seq),
-    )
+    rpos = query_to_ref(read, len(seq))
 
     new_entries: list[ModEntry] = []
     ml_out: list[int] = []
